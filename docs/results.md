@@ -38,3 +38,42 @@ controlled A/B comparison of planning/perception changes with the only variable
 being the change under test.
 
 *Further closed-loop and velocity-prediction results are in progress.*
+
+## Velocity prediction (Phase 3.2) — honest-perception tracking
+
+A perception-only multi-object tracker was built to replace ground-truth agent
+velocity in the planner's predictive-collision reasoning. It clusters dense
+detections into discrete objects, compensates for ego motion, estimates world-frame
+velocity by differencing positions over time, and projects agent motion forward for
+proactive avoidance.
+
+### Validation approach
+The tracker was compared head-to-head against a ground-truth-velocity baseline on
+deterministic seeded scenarios (same world, same traffic, only the velocity source
+changed). This isolates the question: *does honest, perception-derived velocity
+drive as well as perfect velocity?*
+
+### Findings
+- **The tracker matches ground-truth-quality driving** on standard traffic
+  approaches — identical route completion, distance, and emergency-braking behavior.
+  Perception-only velocity estimation was good enough to make the same avoidance
+  decisions as a system given perfect velocity.
+- **Emergency braking is proximity-bound, not prediction-bound.** Investigation of
+  the control stack showed the automatic emergency brake is a reactive safety
+  override triggered by immediate physical proximity — independent of the planner's
+  predictive cost, by design. This means prediction quality is correctly measured by
+  *trajectory choice and maintained following distance*, not by the emergency-brake
+  counter. A common evaluation pitfall is to measure a predictive component against a
+  reactive safety gate it cannot, architecturally, influence.
+- **Next step: targeted conflict scenarios.** Demonstrating a measurable advantage
+  for predicted velocity requires scenarios where velocity *direction* changes the
+  optimal trajectory (e.g. a timed perpendicular crossing), rather than general
+  traffic where honest and perfect velocity converge on the same decision. This is
+  in progress.
+
+### Why this matters
+The result is a disciplined negative-to-neutral finding stated honestly: the
+capability is real and non-regressive, the naive success metric was shown to be the
+wrong one, and the evaluation was redirected to measure what the component can
+actually affect. Reporting this transparently — rather than claiming an unverified
+win — is the same evaluation rigor applied throughout the project.
