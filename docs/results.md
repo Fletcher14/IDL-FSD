@@ -95,3 +95,15 @@ Net throughput improved ~44%, with identical driving outcomes confirmed before a
 after (same route completion, distance, and braking behavior). Each change was
 verified for correctness before adoption rather than trusted on the basis of a
 faster wall-clock alone — the same evaluation discipline applied to the model work.
+
+### Render-path optimization
+
+The visualizer redrew the entire road network every frame regardless of what was
+on screen. Since the view shows only a small region of a large procedural world,
+the vast majority of that drawing was off-screen. A viewport cull was added —
+reusing the same per-lane spatial geometry the perception path uses — so each
+frame draws only the lanes whose bounds intersect the visible region (roughly a
+hundredth of the network at typical zoom). The cull is zoom-aware and the lane
+geometry is computed once, since the road is static. This removed the road-drawing
+routines from the render profile entirely, materially smoothing playback on
+lower-powered hardware, with no change to what is displayed.
