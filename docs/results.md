@@ -176,3 +176,64 @@ fails to produce avoidance, and to make the planner respond to it — then re-ru
 harness to measure whether estimated vs ground-truth velocity matters once the response exists.
 
 *Reproducible: fixed seed, documented harness and commands in the repo.*
+## Crossing-conflict, part 2 — fixing the planner, and when velocity actually matters
+
+The first crossing-conflict study (above) found that the planner produced **no
+behavioural response** to a crossing agent — the ego drove an identical trajectory
+whether the agent was present or not. This follow-up traces that to its root cause,
+fixes it, and re-runs the velocity comparison now that the planner can actually respond.
+
+### Root cause: speed did not affect position
+
+The trajectory sampler generated candidate paths by interpolating from the ego to a
+look-ahead point as a function of **time** only. The candidate "speed" affected the
+cost function's speed term but **not the actual positions** in the trajectory — a slow
+candidate and a fast candidate occupied the same place at the same timestep. Because of
+this, slowing down could never move the ego out of a crossing agent's path; it was pure
+cost penalty with no avoidance benefit, so the planner never chose it.
+
+The fix was to advance trajectory position by **actual speed along the path** (arc-length
+accumulated as speed × dt per step), clamped to the available look-ahead. A slow candidate
+now genuinely lags and arrives at a conflict point later. Normal navigation was re-verified
+(the ego still reaches destinations) before evaluating the crossing scenario.
+
+### Result: velocity quality decides the knife-edge
+
+With the planner able to respond, the velocity-source A/B (estimated tracker velocity vs
+ground-truth) was swept finely across conflict timing. Minimum ego–agent distance, by arm:
+
+| timing offset | tracker (estimated) | ground-truth | tracker outcome | GT outcome |
+|--------------:|--------------------:|-------------:|-----------------|------------|
+| -15 | 9.6 m | 6.7 m | yielded | yielded |
+| -10 | 6.3 m | 3.5 m | yielded | yielded |
+|  -5 | 3.6 m | 3.7 m | yielded | yielded |
+|   0 | **0.8 m** | **3.9 m** | **collision** | **yielded** |
+|  +5 | 4.3 m | 7.4 m | yielded | yielded |
+| +10 | 7.8 m | 10.9 m | yielded | yielded |
+| +15 | 11.3 m | 14.6 m | yielded | yielded |
+
+At the exact collision-course timing (offset 0), estimated velocity misjudged the conflict
+and **collided** (0.8 m), while ground-truth velocity **yielded** (3.9 m). This was a
+single knife-edge: at every other timing in the band both arms cleared the agent.
+
+There is also a consistent asymmetry worth noting honestly — estimated velocity kept *more*
+margin when the agent arrived early (negative offsets) and *less* when it arrived on-time or
+late, consistent with a small timing bias in the estimate. The one failure landed precisely
+where that error had the least room to be absorbed.
+
+### Honest scope
+
+This is not "estimated velocity is unsafe." Across the timing band the two are comparable,
+and the single collision is one sample at the exact conflict point. It is also fair to say
+the planner's crossing-avoidance is *marginal* in general — even ground-truth's "safe" pass
+is a 3.9 m near-miss, and neither arm brakes early specifically for the crossing agent; the
+deceleration present is route-following. Ground-truth simply has enough prediction accuracy
+to thread the conflict where the noisy estimate does not.
+
+The takeaway: with a planner that can respond, **velocity-estimation error is tolerable
+everywhere except the exact knife-edge conflict, where it is the margin between a near-miss
+and a collision.** That is the long-tail edge case the project is built to surface — the rare,
+precise moment where perception quality determines the outcome. Next: make crossing-avoidance
+robust (early braking for predicted cross-traffic, not just route-following), then re-measure.
+
+*Reproducible: fixed seed, deterministic harness, documented commands in the repo.*
