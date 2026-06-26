@@ -107,3 +107,72 @@ hundredth of the network at typical zoom). The cull is zoom-aware and the lane
 geometry is computed once, since the road is static. This removed the road-drawing
 routines from the render profile entirely, materially smoothing playback on
 lower-powered hardware, with no change to what is displayed.
+## Crossing-conflict harness — does honest velocity estimation change driving?
+
+### Question
+
+The perception stack produces *estimated* agent velocities (from a tracker running on
+noisy detections), while the simulator knows each agent's *true* velocity. A long-standing
+open question: does using estimated velocity instead of ground-truth change the planner's
+behaviour in situations where velocity matters? Prior tests on random traffic never showed
+a difference, because random traffic rarely forces a velocity-dependent decision.
+
+### Method
+
+A deterministic **crossing-conflict harness** was built: the ego drives straight along a
+highway while a single constant-velocity agent crosses its path, timed to meet at a fixed
+conflict point. Random traffic is disabled for clean isolation. The crossing agent ignores
+the ego entirely, forcing the ego to be the one that predicts and responds.
+
+The harness was run as an A/B across the velocity source — estimated (tracker) vs
+ground-truth — and swept across five timing offsets that vary how tightly the paths
+conflict. Seed fixed at 42; per-step trajectory cost and ego↔crosser distance logged to CSV.
+
+### Result
+
+Across all ten runs (2 velocity sources × 5 timing offsets), the **driving behaviour was
+identical** between estimated and ground-truth velocity:
+
+| offset | min-distance | first-decel position | peak decel | outcome |
+|-------:|-------------:|---------------------:|-----------:|---------|
+| -40 | 24.1 m | x = -85 | -6.0 m/s² | passed |
+| -20 | 10.0 m | x = -85 | -6.0 m/s² | passed |
+|  0  |  4.1 m | x = -85 | -6.0 m/s² | passed |
+| +20 | 18.2 m | x = -85 | -6.0 m/s² | passed |
+| +40 | 32.2 m | x = -85 | -6.0 m/s² | passed |
+
+Estimated and ground-truth velocity gave the same minimum distance, the same braking point,
+and the same deceleration at every offset — the trajectories are behaviourally identical.
+
+### The control run — and the actual finding
+
+To check whether the ego was responding to the crossing agent *at all*, a control was run
+with the crossing agent placed far away (no possible conflict). **The ego braked at the
+same point (x = -85), with the same deceleration, and accumulated nearly the same trajectory
+cost (7354 vs 7354–7476 with the agent present).**
+
+This shows the deceleration is a **route-following behaviour** (slowing for road geometry on
+the planned path), not a response to the crossing agent. The crossing agent contributes
+little measurable cost and produces **no behavioural avoidance**: the ego drives an identical
+trajectory whether the agent is present or absent.
+
+The apparent difference between estimated and ground-truth velocity seen in the raw cost
+traces reflects route-cost dynamics, not collision response. The trajectory-cost signal is
+dominated by route-following terms; the crossing agent's collision-cost contribution is small
+relative to them and never changes the selected trajectory.
+
+### Interpretation
+
+The harness did its job: it exposed that **crossing conflicts are not currently handled by
+the planner**. On a lane-locked highway, every candidate trajectory carries similar exposure
+to a crossing agent, so collision cost does not differentiate "slow down" from "maintain
+speed", and no avoidance emerges. The near-misses (4.1 m at the tightest offset) occur
+because both arms simply drive through.
+
+This is the honest result. It is not "estimated velocity matches ground truth"; it is
+"velocity source is irrelevant here because the crossing agent isn't influencing the decision
+in the first place." The next step is to investigate why collision cost from cross-traffic
+fails to produce avoidance, and to make the planner respond to it — then re-run this same
+harness to measure whether estimated vs ground-truth velocity matters once the response exists.
+
+*Reproducible: fixed seed, documented harness and commands in the repo.*
