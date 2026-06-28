@@ -505,3 +505,68 @@ positives at the model level (multi-frame temporal fusion in perception, rather 
 — and then re-runs this same velocity A/B to measure whether the knife-edge finally closes.
 
 *Reproducible: fixed seed, deterministic crossing harness, trained perception model, swept across conflict timing.*
+
+## Crossing-conflict, part 7 — taking the fix to perception, and what it reveals
+
+Part 6 localised the remaining knife-edge collision to the perception false-positive rate and
+ruled out every fix downstream of the model — in the planner and in the tracker. The diagnosis
+pointed at perception itself, and named the mechanism the roadmap had always intended for it:
+multi-frame temporal fusion. This part implements that fusion at the perception level and tests
+whether it closes the gap. It does not — and the reason is the most useful finding of the arc.
+
+### The fix: fuse objectness across frames, before thresholding
+
+Perception emits a per-cell objectness map each frame; detections are the cells above a
+threshold. Until now that decoding was single-frame — every frame judged on its own. The
+temporal fusion maintains a running, motion-compensated average of the objectness map across
+frames: the previous map is warped into the current ego frame (accounting for how the vehicle
+has moved and turned), then blended with the current one, and only the *fused* map is
+thresholded.
+
+The intent is an asymmetry. A real object, detected in roughly the same place frame after
+frame, has its evidence reinforced. A flickering false positive — present one frame, gone the
+next — is averaged down below the threshold and never becomes a detection. Crucially this
+happens in the continuous score domain, before the hard threshold, which is the one place a
+downstream filter cannot reach.
+
+### The result: no change at the knife-edge
+
+Across blend weights — from a balanced average to one strongly favouring the current frame —
+the knife-edge offset still collides, and the count of confirmed false-positive tracks around
+the conflict barely moves. Weighting the current frame less (more temporal smoothing) did not
+help; it slightly hurt, because the same lag that damps a phantom also delays the real crosser.
+
+The chart says it plainly: ground-truth velocity clears the conflict comfortably; every
+estimated-velocity variant — no fusion, and fusion at two blend weights — collides well under
+the safety threshold.
+
+![at the +5 knife-edge, temporal fusion at any blend weight still collides](persistent_fp.png)
+
+### Why temporal fusion cannot help here
+
+Temporal fusion removes *flicker*. It works precisely because a false positive that comes and
+goes averages toward zero. But the false positives in the dense region around this conflict are
+not flicker — they are **persistent**. The model asserts them, confidently, frame after frame,
+in the same place. A running average of a signal that is present every frame simply reproduces
+that signal. There is no flicker to average away.
+
+This is the sharpened conclusion. Part 6 showed the false positives could not be filtered
+downstream of the model. Part 7 shows they cannot be filtered *inside* the model's inference
+either — not because the fusion is wrong (it is the right tool for flicker, and it is kept as a
+standing capability), but because the errors are not the kind of error any filter removes. A
+confident, repeated hallucination is indistinguishable, at every stage after it is produced,
+from a real object. The only place left to fix it is the place that produces it: the model's
+learned false-positive rate.
+
+### Where this leaves the arc, and what comes next
+
+The crossing-conflict investigation has now traced a single knife-edge collision from the
+planner, through the tracker, into perception's inference, and finally to the model weights
+themselves — ruling out every cheaper fix with a clear mechanism at each step, and confirming
+at each step that the planner's decision-making was sound. The remaining lever is the one the
+whole arc has been narrowing toward: reducing the model's intrinsic false-positive rate in
+structurally dense regions, through targeted retraining. That is the next body of work, and it
+is now motivated by evidence rather than guesswork — which is exactly the position a retraining
+effort wants to start from.
+
+*Reproducible: fixed seed, deterministic crossing harness, trained perception model, swept across conflict timing.*
