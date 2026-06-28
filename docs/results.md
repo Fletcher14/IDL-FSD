@@ -237,3 +237,47 @@ precise moment where perception quality determines the outcome. Next: make cross
 robust (early braking for predicted cross-traffic, not just route-following), then re-measure.
 
 *Reproducible: fixed seed, deterministic harness, documented commands in the repo.*
+## Crossing-conflict, part 3 — robust anticipatory avoidance
+
+Part 2 ended with a clear problem statement: the planner braked for route geometry, not for the crossing agent, so ground-truth velocity only beat estimated velocity by getting lucky on the knife-edge. The fix required making the planner actually respond to predicted cross-traffic. This update documents that fix and its validation.
+
+### Root cause: cost fired for all agents regardless of heading
+
+The anticipatory collision cost (a soft look-ahead term that starts well before physical proximity) was applied to **every nearby agent** regardless of whether that agent was on a crossing path or a parallel one. A car in the same lane triggered the same anticipatory cost as a car about to cross the ego's path. Because the planner saw the same pressure from both, it could not resolve "slow down to yield" from "normal following distance" — the signal was swamped by parallel traffic and never differentiated crossing from non-crossing situations.
+
+### Fix: perpendicular detection via heading cross-product
+
+The planner now classifies each agent before applying anticipatory cost. The cross product of the ego heading vector and each agent's velocity unit vector yields `|sin(angle_diff)|` — 1.0 for a purely perpendicular agent, 0.0 for a parallel one. Only agents exceeding a threshold (≈ sin 40°) are classified as crossers and receive anticipatory avoidance cost starting 25 metres out. Parallel and following traffic is unaffected.
+
+This classification runs in both the Python planning path and the C++ high-performance scoring path, producing identical results.
+
+### Validation: crossing scenario
+
+Controlled test: ego traveling East, single crosser traveling South at 14 m/s, conflict point ahead. Random traffic disabled for clean isolation.
+
+| Metric | Before fix | After fix |
+|--------|-----------|-----------|
+| Outcome | AEB slam (emergency stop) | BRAKED / YIELDED |
+| Min distance to crosser | 3.6 m (AEB triggered) | 7.4 m (smooth yield) |
+| Peak deceleration | −256 m/s² (AEB) | −6.0 m/s² |
+| First decel distance from conflict | — | 165 m |
+| AEB activations | 1 | 0 |
+
+The ego now brakes early and smoothly, yielding with 7.4 m of clearance instead of slamming to a stop at 3.6 m.
+
+### Validation: navigation regression
+
+Normal road driving with 16 traffic agents, C++ scoring path enabled:
+- Peak speed: 85 km/h — no over-caution on open road ✅
+- AEB activations: 0 ✅
+- Parallel traffic at intersections handled correctly; only genuine cross-heading agents trigger anticipatory cost ✅
+
+### Performance
+
+C++ high-performance scoring path: **14.6× faster** than the Python reference for the same scenario (157 s vs 2,302 s wall time). Behavior is bit-identical between the two paths.
+
+### What this resolves
+
+Part 2's honest conclusion was that velocity-estimation error only became the deciding factor at the exact knife-edge conflict — but that the planner's response to crossing traffic was marginal even with perfect velocity. This update removes that caveat: the planner now responds early, with genuine avoidance, not route-following deceleration. The ground-truth velocity arm now yields at 7.4 m; the prior best was a 3.9 m near-miss. The next step is to re-run the full estimated-vs-ground-truth velocity comparison now that the avoidance response exists, to measure whether the knife-edge failure from Part 2 is resolved.
+
+*Reproducible: fixed seed, deterministic crossing harness.*
