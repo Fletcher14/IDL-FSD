@@ -349,3 +349,90 @@ cleanly: now that crossing-avoidance is robust, does estimated (perception-deriv
 drive this conflict band as safely as perfect velocity? That comparison is next.
 
 *Reproducible: fixed seed, deterministic crossing harness, swept across conflict timing.*
+
+## Crossing-conflict, part 5 — does estimated velocity drive as safely as perfect velocity?
+
+This is the question the whole crossing-conflict arc was built to answer. Part 2 first
+asked it and found it unanswerable — the planner did not respond to crossing traffic at
+all, so velocity source could not matter. Parts 3 and 4 made crossing-avoidance robust.
+Now, with a planner that genuinely yields, the original question can finally be put
+cleanly: when the planner reasons about a crosser's velocity, does a *perception-estimated*
+velocity produce the same safe decisions as *ground-truth* velocity?
+
+### Method
+
+A controlled A/B: the same robust planner, the same deterministic crossing harness, the
+same trained perception model — varying only the **velocity source**. The ground-truth arm
+feeds the planner each agent's true velocity; the estimated arm feeds it the perception
+tracker's estimate, derived from noisy detections. Both arms were swept across seven
+conflict-timing offsets (how tightly the ego and crosser are timed to meet), with a fixed
+seed. Minimum ego–crosser distance was logged per run.
+
+A first run exposed a prerequisite: with an untrained perception model the tracker
+hallucinated a large field of phantom detections that swamped the planner. Loading the
+trained model (the Phase 3.1 retrained perception, validation loss 0.068) was required
+before the comparison was meaningful — estimated velocity is only as good as the perception
+under it.
+
+### Result
+
+The ground-truth arm reproduced the Part 4 baseline almost exactly (it does not depend on
+perception). The estimated arm tells a sharper story:
+
+| timing offset | ground-truth | estimated | outcome (estimated) |
+|--------------:|-------------:|----------:|---------------------|
+| -15 | 12.9 m | 12.8 m | yield |
+| -10 |  8.8 m |  9.5 m | yield |
+|  -5 |  7.5 m |  6.5 m | yield |
+|   0 |  7.4 m |  3.9 m | yield |
+|  +5 |  7.4 m | **0.1 m** | **collision** |
+| +10 | 10.9 m |  4.7 m | yield |
+| +15 | 14.6 m |  8.1 m | yield |
+
+![ground-truth vs estimated velocity, min distance across timing offsets](velocity_source_ab.png)
+
+Estimated velocity is collision-free at six of seven timings — perception velocity is good
+enough to make the right call most of the time. But two things stand out. First, it gives
+up a large, systematic margin across the conflict band (the shaded gap), concentrated on
+the side where the ego is the earlier party. Second, at one knife-edge timing it does not
+merely lose margin — it **collides**.
+
+Notably, the failure did not disappear from Part 2; it **moved**. Part 2's estimated-velocity
+crash was at the dead-centre timing; the pass-order planner fixed that one (now a safe 3.9 m)
+but a new failure surfaced one notch over. Making the planner velocity-aware also made it
+velocity-error-sensitive — in a new place.
+
+### Diagnosis: the failure is invented crossers, not a mis-measured one
+
+The instinctive explanation — perception mis-estimates the *crosser's* speed — turned out to
+be wrong. The trace shows the opposite: at the failing timing the estimated-arm ego drives
+*slower* than the ground-truth ego through the approach, braking when it should hold speed.
+It surrenders the small lead it needs, and the crosser — arriving exactly on schedule —
+catches the delayed ego.
+
+What causes the braking is not the real crosser at all. In the dense region around the
+conflict (a road crossing), the perception model emits a cluster of a dozen-plus persistent
+**false-positive tracks**. In the ground-truth arm these are harmless — the planner avoids
+against true agents and the phantoms are mere cost noise. In the estimated arm they are
+routed straight into crossing-avoidance: some are flagged as crossers to yield for, every
+candidate trajectory inherits their cost, and the cheapest remaining option is to brake.
+The ego brakes for ghosts, loses its lead, and hits the one agent that is real.
+
+The ground-truth-vs-estimated asymmetry is the proof: the same phantom detections exist in
+both arms; only the arm that *acts on perception* is harmed by them.
+
+### Why this matters
+
+The honest conclusion is sharper than "estimated velocity works" or "estimated velocity
+fails." It is conditional: **robust crossing-avoidance is necessary but not sufficient.**
+Once the planner reasons about velocity, the binding safety constraint shifts from the
+planner to the *perception false-positive rate in dense regions*. Perfect velocity hides
+this because perfect perception has no phantoms; honest perception exposes it precisely at
+the knife-edge, where there is no margin to absorb a spurious brake.
+
+This reframes the next piece of work. The fix is not better velocity estimation — the
+crosser's velocity was never the problem. It is rejecting phantom tracks before they reach
+the planner's avoidance logic. That fix, and a re-run of this same A/B to measure whether it
+closes the knife-edge gap, is the subject of the next part.
+
+*Reproducible: fixed seed, deterministic crossing harness, trained perception model, swept across conflict timing.*
