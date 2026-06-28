@@ -436,3 +436,72 @@ the planner's avoidance logic. That fix, and a re-run of this same A/B to measur
 closes the knife-edge gap, is the subject of the next part.
 
 *Reproducible: fixed seed, deterministic crossing harness, trained perception model, swept across conflict timing.*
+
+## Crossing-conflict, part 6 — chasing the knife-edge down to its root
+
+Part 5 left one failure: at a single crossing-timing offset, perception-estimated velocity
+collided where ground-truth velocity cleared. The diagnosis was that the failure was not a
+mis-measured crosser but *invented* ones — high-confidence false-positive tracks in the dense
+region around the conflict, braking the ego out of the lead it needed. This part asks the
+obvious follow-up: can that be fixed downstream, in the tracker or the planner, without
+touching the perception model? Three honest attempts say no — and the way each one fails
+points precisely at the real bottleneck.
+
+### What a false positive actually looks like here
+
+Before fixing, the phantom tracks were characterised directly. The instinct is that they are
+low-confidence noise that a threshold could remove. The data says the opposite: the phantom
+tracks carry detection confidence as high as — often higher than — the real crosser. They are
+*confidently wrong*. A confidence threshold strict enough to drop them deletes the real agent
+first.
+
+What does separate a phantom from a real agent is **motion coherence over time**: the real
+crosser holds a steady velocity, while a phantom's estimated velocity lurches frame to frame.
+But that signal is muddied by a second problem — the real crosser is itself fragmented into
+several short-lived tracks as it crosses (the tracker repeatedly loses and re-acquires it), so
+each fragment is brief and velocity-noisy, overlapping the phantom range. The clean separator
+does not exist in the feature space available downstream.
+
+### Three downstream fixes, three ways to hit the wall
+
+**1. Temporal-fusion gate (tracker).** Require a track to demonstrate coherent velocity over
+several frames before it is trusted for avoidance. This suppresses the jumpy phantoms — but it
+also withholds the *real* crosser during the frames its velocity is still settling. The result
+was not a fix but a relocation: the collision moved from the late-arrival offset to the
+early-arrival one, the unmistakable signature of added reaction latency. Tuning the coherence
+threshold across its useful range did not help — the failure was threshold-invariant, because
+the real crosser's settling-period velocity overlaps the phantoms no matter where the line is
+drawn.
+
+**2. Cost-robustness (planner).** Stop *summing* the anticipatory yield cost across all tracks
+and take the maximum instead — so a field of phantoms cannot pile up into a brake, while a
+single real crosser still produces its full yield cost with no added latency. This removed the
+pile-up failure mode cleanly (and, elegantly, leaves single-agent and normal-traffic behaviour
+mathematically unchanged, since a max over one item is that item). It improved the worst-case
+margin — but the collision remained. The reason is decisive: at that offset a *single*
+high-confidence phantom, sitting on an apparent collision course, is on its own enough to
+justify a brake. And it should be — a real crosser there would look identical. The cost
+function cannot tell the difference, because there is no difference to see.
+
+![every downstream mitigation collides somewhere; only ground-truth stays clear](perception_wall.png)
+
+### The conclusion the three failures converge on
+
+Every downstream lever bottoms out at the same wall. Gating on coherence trades the failure
+for latency. Tuning the gate moves nothing. Making the cost robust to many phantoms still
+leaves one phantom, which is indistinguishable from the real thing. The binding constraint is
+not the planner and not the tracker — it is the **perception false-positive rate in dense
+regions**. A phantom that looks exactly like a real crosser cannot be filtered after the fact;
+the only place to remove it is where it is created.
+
+This is a genuinely useful negative result. It rules out a whole class of fixes, and it does so
+with a clear mechanism rather than a hunch. The planner was shown to be sound — it makes the
+correct decision on every real crosser, at every timing. The remaining failure is perception
+quality, and it is now localised precisely enough to act on.
+
+The mitigations explored here were reverted; the planner and tracker stand at their validated
+state. The next part takes the fix to where the diagnosis points — reducing perception false
+positives at the model level (multi-frame temporal fusion in perception, rather than after it)
+— and then re-runs this same velocity A/B to measure whether the knife-edge finally closes.
+
+*Reproducible: fixed seed, deterministic crossing harness, trained perception model, swept across conflict timing.*
