@@ -281,3 +281,71 @@ C++ high-performance scoring path: **14.6× faster** than the Python reference f
 Part 2's honest conclusion was that velocity-estimation error only became the deciding factor at the exact knife-edge conflict — but that the planner's response to crossing traffic was marginal even with perfect velocity. This update removes that caveat: the planner now responds early, with genuine avoidance, not route-following deceleration. The ground-truth velocity arm now yields at 7.4 m; the prior best was a 3.9 m near-miss. The next step is to re-run the full estimated-vs-ground-truth velocity comparison now that the avoidance response exists, to measure whether the knife-edge failure from Part 2 is resolved.
 
 *Reproducible: fixed seed, deterministic crossing harness.*
+
+## Crossing-conflict, part 4 — pass-order gating, and the cost of braking the wrong way
+
+Part 3 made the planner respond to genuine crossing traffic by gating anticipatory
+cost on *perpendicularity* — only agents moving across the ego's heading triggered an
+early yield. That fixed the hard cases (a crosser arriving at the same time as the ego)
+but, swept finely across conflict timing, it revealed a new failure: a **collision** at
+one positive timing offset where the previous, dumber planner had passed cleanly.
+
+### Root cause: the gate had no sense of who arrives first
+
+A perpendicular agent within range always triggered braking — regardless of whether the
+ego was the give-way party or already had right of way by timing. When the crosser was
+timed to arrive *after* the ego would naturally clear, braking was exactly the wrong move:
+it bled off the ego's lead and dropped it back into the crossing path, converting a clean
+pass into a near-simultaneous arrival.
+
+The trace made the mechanism explicit. At the failing offset the ego slowed itself from
+its cruise speed down into the conflict — and the slower it went, the more "simultaneous"
+the conflict looked to the cost function, which justified yet more braking. A feedback
+loop of self-inflicted deceleration.
+
+### Fix: time-to-conflict pass-order gate
+
+The planner now estimates, for each crosser, the geometric conflict point (where the two
+heading lines intersect) and compares **time-to-conflict** for ego and agent. The
+anticipatory yield cost is applied only when the ego does *not* clearly reach that point
+first. When the ego is the earlier party, the gate stays silent and the ego holds its
+speed to clear — recovering the clean behaviour the naive gate had broken.
+
+The critical detail: the ego's time-to-conflict is computed against its **route free-flow
+speed**, not its current (possibly already-braking) speed. Using current speed reintroduces
+the feedback loop — the braking makes the conflict look simultaneous, which sustains the
+braking. Referencing the intended cruise speed breaks that loop: the question becomes
+"at my normal speed, do I arrive first?", which is invariant to the gate's own influence.
+
+### Result: strictly better at every timing
+
+Sweeping GT velocity across seven conflict-timing offsets, the pass-order gate is the
+**upper envelope** of both previous generations — it keeps every hard-side gain and
+restores every clean positive-offset pass:
+
+| timing offset | Part 2 (route-following) | Part 3 (perpendicular gate) | Part 4 (pass-order gate) |
+|--------------:|-------------------------:|----------------------------:|-------------------------:|
+| -15 |  6.7 m |  12.9 m | **12.9 m** |
+| -10 |  3.5 m |   8.9 m |  **8.9 m** |
+|  -5 |  3.7 m |   7.6 m |  **7.6 m** |
+|   0 |  3.9 m |   7.4 m |  **7.4 m** |
+|  +5 |  7.4 m |  **1.2 m (collision)** |  **7.4 m** |
+| +10 | 10.9 m |   3.5 m | **10.9 m** |
+| +15 | 14.6 m |  11.8 m | **14.6 m** |
+
+Minimum clearance never drops below 7.4 m, the collision is gone, and no offset regressed.
+Normal navigation (mixed traffic, full route to destination) was re-verified unchanged —
+the gate stays silent for parallel and following traffic and only engages for genuine
+cross-traffic the ego must give way to.
+
+![min distance vs timing offset, three planner generations](crossing_passorder_sweep.png)
+
+### Honest scope
+
+This is measured against ground-truth velocity, which isolates the *planner* behaviour
+from perception error. The point of the fix is a planner that yields when — and only when —
+yielding helps. With that in place, the original question from Part 2 can finally be asked
+cleanly: now that crossing-avoidance is robust, does estimated (perception-derived) velocity
+drive this conflict band as safely as perfect velocity? That comparison is next.
+
+*Reproducible: fixed seed, deterministic crossing harness, swept across conflict timing.*
