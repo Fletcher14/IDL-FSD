@@ -352,6 +352,13 @@ drive this conflict band as safely as perfect velocity? That comparison is next.
 
 ## Crossing-conflict, part 5 — does estimated velocity drive as safely as perfect velocity?
 
+> **Correction (Part 8):** the estimated-velocity diagnostics below were run in a train/serving
+> regime mismatch — the model received clean ground-truth input although it was trained on
+> sensor-realistic observations. In the corrected in-regime evaluation, phantom-detection volume
+> roughly halves and the failing timing offset shifts. The mechanism and conclusion this part
+> draws survive the correction; the specific failing offset and ghost counts here are superseded
+> by Part 8.
+
 This is the question the whole crossing-conflict arc was built to answer. Part 2 first
 asked it and found it unanswerable — the planner did not respond to crossing traffic at
 all, so velocity source could not matter. Parts 3 and 4 made crossing-avoidance robust.
@@ -439,6 +446,13 @@ closes the knife-edge gap, is the subject of the next part.
 
 ## Crossing-conflict, part 6 — chasing the knife-edge down to its root
 
+> **Correction (Part 8):** the estimated-velocity diagnostics below were run in a train/serving
+> regime mismatch — the model received clean ground-truth input although it was trained on
+> sensor-realistic observations. In the corrected in-regime evaluation, phantom-detection volume
+> roughly halves and the failing timing offset shifts. The mechanism and conclusion this part
+> draws survive the correction; the specific failing offset and ghost counts here are superseded
+> by Part 8.
+
 Part 5 left one failure: at a single crossing-timing offset, perception-estimated velocity
 collided where ground-truth velocity cleared. The diagnosis was that the failure was not a
 mis-measured crosser but *invented* ones — high-confidence false-positive tracks in the dense
@@ -508,6 +522,13 @@ positives at the model level (multi-frame temporal fusion in perception, rather 
 
 ## Crossing-conflict, part 7 — taking the fix to perception, and what it reveals
 
+> **Correction (Part 8):** the estimated-velocity diagnostics below were run in a train/serving
+> regime mismatch — the model received clean ground-truth input although it was trained on
+> sensor-realistic observations. In the corrected in-regime evaluation, phantom-detection volume
+> roughly halves and the failing timing offset shifts. The mechanism and conclusion this part
+> draws survive the correction; the specific failing offset and ghost counts here are superseded
+> by Part 8.
+
 Part 6 localised the remaining knife-edge collision to the perception false-positive rate and
 ruled out every fix downstream of the model — in the planner and in the tracker. The diagnosis
 pointed at perception itself, and named the mechanism the roadmap had always intended for it:
@@ -570,3 +591,74 @@ is now motivated by evidence rather than guesswork — which is exactly the posi
 effort wants to start from.
 
 *Reproducible: fixed seed, deterministic crossing harness, trained perception model, swept across conflict timing.*
+
+## Crossing-conflict, part 8 — a regime confound, and the correction it forces
+
+This part corrects the three preceding ones. Before committing GPU time to retraining the
+perception model — the direction Parts 6–7 pointed toward — the responsible prerequisite was to
+confirm the conditions the model had been trained under. That check surfaced a mistake in how
+every preceding crossing diagnostic had been run, and the honest thing is to report it plainly,
+quantify what it changed, and state what survives.
+
+### The confound
+
+The baseline perception model was trained on **sensor-realistic observations** — the bird's-eye
+input degraded by range falloff, noise, dropout, and occlusion, the way real perception sees the
+world. But every crossing diagnostic in Parts 5–7 fed the model **clean ground-truth** input
+instead. That is a train/serving mismatch: the model was asked to run on an input distribution it
+had never been trained on. A model handed out-of-distribution input can hallucinate confidently,
+and some of the phantom detections those parts analysed were a product of the mismatch rather than
+an intrinsic property of the model.
+
+This was caught by making regime verification a hard prerequisite to retraining — the check exists
+precisely because a regime mismatch confounds results. It did its job; it simply did it late.
+
+### What the correction changes
+
+Re-running the crossing A/B in the **correct** regime — the same sensor-realistic observations the
+model was trained on — changes two things materially:
+
+1. **Ghost volume roughly halves.** In the matched regime the perception stack produces about half
+   as many phantom detections over the same route. A meaningful share of the ghosts the earlier
+   parts counted were inflation from the input mismatch.
+2. **The failing timing moves.** The headline collision of Parts 5–7 sat at one specific crossing
+   offset. In the correct regime that offset clears comfortably, and the collision reappears at the
+   *dead-centre* timing — true simultaneous arrival, the genuinely hardest case — producing a clean,
+   symmetric curve instead of the earlier lopsided one.
+
+![the estimated-velocity collision shifts from one offset to the worst-case timing, but persists](regime_correction.png)
+
+The published estimated-velocity curve (mismatched) and the corrected one (in-regime) are both
+V-shaped, but the corrected V is centred where it physically should be — at the simultaneous-arrival
+worst case — and the ground-truth ceiling clears every timing throughout.
+
+### What survives — and why the core conclusion still holds
+
+The correction is bounded, not a retraction. Re-tested in the correct regime, at the worst-case
+timing:
+
+- the collision **persists** (ground-truth clears it; estimated velocity does not);
+- it is **still driven by phantom detections** clustered at the conflict — the matched regime reduced
+  their number but did not remove them;
+- the downstream and inference-time filters are **re-confirmed ruled out in-regime**: tracker
+  confirmation gating fails to clear it at every threshold tried, and perception-side temporal fusion
+  fails as well. (One earlier planner-side mitigation was tested only in the mismatched regime and is
+  not claimed here as re-confirmed.)
+
+So the central conclusion of the arc — that a persistent, confident false positive cannot be filtered
+anywhere downstream of the model, which points the remaining fix at the model itself — holds in the
+correct regime. What was wrong was the specific failing offset and the magnitude of the ghost
+problem; what was right was the mechanism and the conclusion it leads to.
+
+### The honest accounting
+
+It would have been easy to quietly re-run the numbers and update the earlier parts in place. That is
+not the standard this project holds itself to. The earlier diagnostics were run in the wrong regime;
+the investigation process around them — ruling out planner, tracker, and inference fixes by direct
+measurement — remains valid and is left standing, with this correction linked from each. A confound
+caught before it drove a retraining effort is the prerequisite check working as intended. The
+direction is unchanged: reducing the model's intrinsic false-positive rate, now on a corrected and
+better-understood in-regime baseline, and still gated behind confirming exactly what input pattern
+triggers the confident hallucination before any weights are touched.
+
+*Reproducible: fixed seed, deterministic crossing harness, trained perception model, evaluated in the matched sensor-observation regime, swept across conflict timing.*
