@@ -662,3 +662,96 @@ better-understood in-regime baseline, and still gated behind confirming exactly 
 triggers the confident hallucination before any weights are touched.
 
 *Reproducible: fixed seed, deterministic crossing harness, trained perception model, evaluated in the matched sensor-observation regime, swept across conflict timing.*
+
+## Crossing-conflict, part 9 — the trigger, and what it turns out to be
+
+Part 8 ended with a promise: before touching any weights, confirm *exactly what input pattern
+triggers the confident hallucination*. This part is that confirmation — and it changes the
+diagnosis. The failure that crashes the car is not the one the whole arc had been chasing.
+
+### Looking at what the model sees, versus what it reports
+
+Every part up to here reasoned about the model's **outputs** — the phantom detections it emits.
+The obvious next step was to line those outputs up against its **inputs**: at each moment, take
+the real crossing vehicle's true position, and ask two questions of the model at that exact spot.
+Is the crosser present in the input the model receives? And does the model report a detection
+there?
+
+The instrumentation logs both, every frame, for the whole approach. The first question has a
+clean answer: **the crosser is fully present in the input in 100% of the frames it is in range** —
+rendered into the vehicle layer at full strength, in both the clean and the sensor-realistic
+input. There is nothing wrong with what the model is being shown.
+
+The second answer is the finding.
+
+### The model is blind to the crosser while it is ahead
+
+Pooling every frame in which the crossing vehicle is within sensor range, across the full sweep
+of timing offsets, the model lands a detection on the real crosser in only about 3% of them. And
+the misses are not random — they are **positional**:
+
+![the model never detects the crossing vehicle while it is ahead of the ego](blindspot.png)
+
+- while the crosser is **ahead** of the ego — the entire region that matters for avoiding it —
+  the model produces **zero** detections on it, across hundreds of frames and every timing offset;
+- it only ever registers the crosser once the vehicle has drawn **alongside or just behind**, and
+  even then only intermittently;
+- by the time the crosser is detectable, at the colliding timing, it is far too late to yield.
+
+So the collision at simultaneous arrival is not a phantom shoving the planner off course. It is
+the opposite failure: the perception model **never sees the real vehicle crossing its path**. The
+car brakes and swerves during the approach — but for phantoms elsewhere, not for the crosser it is
+about to hit. The timing offsets that "cleared" in Part 8 mostly cleared because the offset itself
+separates the two vehicles in time; the model was blind to the crosser there too.
+
+### Confirming it is the model, not the moment
+
+A blind spot that appears only in one scripted scenario is weak evidence. So the next test held
+everything constant except the one variable in question. Take the real approach frames — real
+road, real lane structure, real sensor degradation — remove the crossing vehicle, and inject an
+**identical synthetic vehicle** back in, using the exact same rendering the simulator uses for a
+real vehicle. Then sweep that identical box across positions and ask, at each one, whether the model
+detects it.
+
+The result is unambiguous. Injected at the crosser's true position, the synthetic vehicle
+reproduces the real detection rate exactly — the test faithfully stands in for a real car.
+Injected anywhere **ahead** of the ego, the identical vehicle is detected **zero times out of
+several hundred placements**. Same box, same context, only its position on the map changed. The
+blind spot travels with the *location*, not with the scenario, the crosser's motion, or its
+appearance. It is a property the model learned.
+
+### What this reframes, and what it does not
+
+The arc had converged on a single story: a persistent, confident **false positive** that could
+not be filtered anywhere downstream, pointing the fix at the model. That conclusion survives — but
+it was only half the picture, and the less important half.
+
+- The phantom detections are real, and they remain unfilterable downstream. But they are a
+  **precision** nuisance — they cause spurious braking during the approach; they are not what
+  hits the crosser.
+- What hits the crosser is a **recall** failure: a forward-detection blind spot. The model does
+  not detect the one object collision-avoidance most depends on — a vehicle crossing its path
+  ahead.
+
+This matters for the fix, which is the whole reason the arc has been so careful not to retrain on
+a hunch. A precision problem and a recall problem call for opposite corrections. The mitigation the
+earlier parts were circling — concentrating the loss on hard negatives to suppress false positives —
+targets precision, and would have done nothing for the failure that actually causes the crash. The
+correct target is **recall in the forward region**: the model has to be taught to see vehicles
+where, on this evidence, it currently sees nothing — almost certainly a matter of what geometry the
+training data ever placed in front of the vehicle. That is the next step, and it is now a
+mechanism, not a guess.
+
+### The honest accounting
+
+Three parts of this arc described the failure as a confident false positive. That description was
+incomplete: the false positives are genuine, but the collision is a missed detection, and the two
+had been conflated. The earlier reasoning — ruling out every downstream and inference-time filter
+by direct measurement — still stands, and still correctly points at the model. What changes is the
+target inside the model: not the rate at which it invents vehicles, but the rate at which it fails
+to see them. The point of characterising the trigger before retraining was to avoid fixing the
+wrong thing. It did exactly that.
+
+*Reproducible: fixed seed, deterministic crossing harness, trained perception model evaluated in
+the matched sensor-observation regime; blind spot confirmed by identical-vehicle injection into
+real approach frames, swept across position.*
